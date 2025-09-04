@@ -1,0 +1,21 @@
+name: CFCommit
+
+on:
+  push:
+    branches: [ "main" ] # Puedes cambiar "main" por tu rama principal
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *' # Se ejecuta cada 6 horas
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: CFCommit
+        uses: GitDaksh/CFCommit@v1.2
+        with:
+          cf_user_name: ${{ secrets.CF_USER_NAME }}
+          gh_token: ${{ secrets.GH_TOKEN }}
+          commit_message: "feat: ✨ Added Solution for"
