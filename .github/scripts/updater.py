@@ -1,4 +1,4 @@
-# Official Updater Script from GitDaksh/CFCommit
+# Official Updater Script with User-Agent Fix
 import os
 import requests
 from bs4 import BeautifulSoup
@@ -20,9 +20,16 @@ def get_cf_submissions(handle):
 
 def get_source_code(contest_id, submission_id):
     url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
+    
+    # ESTA ES LA LÍNEA CLAVE: AÑADIMOS UN HEADER PARA SIMULAR UN NAVEGADOR
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
     try:
-        response = requests.get(url)
-        response.raise_for_status()
+        # Usamos los headers en la petición
+        response = requests.get(url, headers=headers)
+        response.raise_for_status() # Esto verificará si hay errores como el 403
         soup = BeautifulSoup(response.text, 'html.parser')
         source_code_div = soup.find("pre", {"id": "program-source-text"})
         if source_code_div:
