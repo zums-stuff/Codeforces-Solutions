@@ -1,68 +1,95 @@
+# Official Updater Script from GitDaksh/CFCommit
 import os
 import requests
+from bs4 import BeautifulSoup
 import sys
 import json
 from datetime import datetime
 
 def get_cf_submissions(handle):
     url = f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=100"
-    response = requests.get(url)
-    if response.status_code == 200:
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
         data = response.json()
         if data['status'] == 'OK':
             return data['result']
+    except requests.exceptions.RequestException as e:
+        print(f"API request failed: {e}")
     return []
 
-def main(handle, token):
+def get_source_code(contest_id, submission_id):
+    url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        source_code_div = soup.find("pre", {"id": "program-source-text"})
+        if source_code_div:
+            return source_code_div.get_text().strip()
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to fetch source code for {submission_id}: {e}")
+    return None
+
+def main(handle):
     submissions = get_cf_submissions(handle)
     if not submissions:
         print("No submissions found or API error.")
         return
 
-    history_file = 'submission_history.json'
+    history_file = '.github/scripts/submission_history.json'
     if os.path.exists(history_file):
-        with open(history_file, 'r') as f:
-            committed_ids = set(json.load(f))
+        try:
+            with open(history_file, 'r') as f:
+                committed_ids = set(json.load(f))
+        except json.JSONDecodeError:
+            committed_ids = set()
     else:
         committed_ids = set()
+        os.makedirs(os.path.dirname(history_file), exist_ok=True)
 
-    new_solutions = False
+
+    new_solutions_found = False
     for sub in reversed(submissions):
-        if sub['verdict'] == 'OK' and sub['id'] not in committed_ids:
-            problem = sub['problem']
-            problem_id = f"{problem['contestId']}_{problem['index']}"
+        if sub.get('verdict') == 'OK' and sub.get('id') not in committed_ids:
+            problem = sub.get('problem', {})
+            contest_id = problem.get('contestId')
+            problem_index = problem.get('index')
+            problem_name = problem.get('name', 'UnknownProblem').replace(' ', '_')
+            submission_id = sub.get('id')
+            language = sub.get('programmingLanguage', 'UnknownLang')
+
+            if not all([contest_id, problem_index, submission_id]):
+                continue
+
+            lang_ext_map = {
+                "GNU C++17": "cpp", "GNU C++14": "cpp", "GNU C++11": "cpp", "GNU C++20": "cpp",
+                "Python 3": "py", "PyPy 3": "py",
+                "Java 8": "java", "Java 11": "java",
+                "C#": "cs", "Go": "go", "Rust": "rs"
+            }
+            extension = lang_ext_map.get(language, 'txt')
             
-            lang_ext = {
-                "GNU C++17": "cpp", "Python 3": "py", "Java 8": "java", "C#": "cs",
-                # Agrega otras extensiones si es necesario
-            }.get(sub['programmingLanguage'], 'txt')
-
-            filename = f"submissions/{problem_id}.{lang_ext}"
+            dir_path = f"Codeforces/{contest_id}"
+            os.makedirs(dir_path, exist_ok=True)
             
-            # Obtener el código fuente (requiere scraping, este script simplificado no lo hace)
-            # Para una solución completa, se necesitaría una librería como BeautifulSoup
-            # Por ahora, se crea un archivo de marcador de posición
-            source_code_url = f"https://codeforces.com/contest/{sub['contestId']}/submission/{sub['id']}"
+            filename = f"{dir_path}/{problem_index}_{problem_name}.{extension}"
+            
+            source_code = get_source_code(contest_id, submission_id)
 
-            os.makedirs('submissions', exist_ok=True)
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(f"// Solution for {problem['name']}\n")
-                f.write(f"// Language: {sub['programmingLanguage']}\n")
-                f.write(f"// Submission URL: {source_code_url}\n")
-                f.write(f"// Submission ID: {sub['id']}\n\n")
-                f.write("// NOTE: The source code is not automatically fetched by this simplified script.\n")
-                f.write("// Please visit the URL above to see the code.\n")
+            if source_code:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(source_code)
+                print(f"Successfully added solution: {filename}")
+                committed_ids.add(submission_id)
+                new_solutions_found = True
+            else:
+                print(f"Could not retrieve source code for submission {submission_id}")
 
-
-            print(f"Added solution for {problem_id}")
-            committed_ids.add(sub['id'])
-            new_solutions = True
-    
-    if new_solutions:
+    if new_solutions_found:
         with open(history_file, 'w') as f:
             json.dump(list(committed_ids), f)
 
 if __name__ == "__main__":
     cf_handle = sys.argv[1]
-    gh_token = sys.argv[2]
-    main(cf_handle, gh_token)
+    main(cf_handle)
