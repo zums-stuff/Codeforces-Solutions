@@ -1,13 +1,18 @@
-# Official Updater Script with User-Agent Fix
 import os
 import requests
 from bs4 import BeautifulSoup
 import sys
 import json
-from datetime import datetime
+import time
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 def get_cf_submissions(handle):
-    url = f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=100"
+    url = f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=50" # Reducido a 50 por si acaso
     try:
         response = requests.get(url)
         response.raise_for_status()
@@ -18,27 +23,48 @@ def get_cf_submissions(handle):
         print(f"API request failed: {e}")
     return []
 
-def get_source_code(contest_id, submission_id):
+def get_source_code_with_selenium(contest_id, submission_id):
     url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
     
-    # ESTA ES LA LÍNEA CLAVE: AÑADIMOS UN HEADER PARA SIMULAR UN NAVEGADOR
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+    # --- Configuración de Selenium para un entorno de GitHub Actions ---
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless") # Ejecutar sin abrir una ventana de navegador
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     
+    driver = None
     try:
-        # Usamos los headers en la petición
-        response = requests.get(url, headers=headers)
-        response.raise_for_status() # Esto verificará si hay errores como el 403
-        soup = BeautifulSoup(response.text, 'html.parser')
-        source_code_div = soup.find("pre", {"id": "program-source-text"})
-        if source_code_div:
-            return source_code_div.get_text().strip()
-    except requests.exceptions.RequestException as e:
-        print(f"Failed to fetch source code for {submission_id}: {e}")
-    return None
+        # Usamos webdriver-manager para instalar y manejar el driver de Chrome automáticamente
+        service = ChromeService(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        
+        driver.get(url)
+        
+        # --- Esperar explícitamente a que el elemento con el código fuente esté presente ---
+        # Esto es crucial. Esperará hasta 20 segundos para que la página cargue completamente.
+        wait = WebDriverWait(driver, 20)
+        source_code_element = wait.until(
+            EC.presence_of_element_located((By.ID, "program-source-text"))
+        )
+        
+        # Esperar un poco más por si acaso hay cargas tardías
+        time.sleep(2)
+
+        return source_code_element.text.strip()
+
+    except Exception as e:
+        print(f"Selenium failed for submission {submission_id}: {e}")
+        if driver:
+             # Guardar una captura de pantalla puede ayudar a depurar
+            driver.save_screenshot('selenium_error.png')
+        return None
+    finally:
+        if driver:
+            driver.quit()
 
 def main(handle):
+    # (El resto de la función main es idéntica a la versión anterior)
     submissions = get_cf_submissions(handle)
     if not submissions:
         print("No submissions found or API error.")
@@ -82,7 +108,8 @@ def main(handle):
             
             filename = f"{dir_path}/{problem_index}_{problem_name}.{extension}"
             
-            source_code = get_source_code(contest_id, submission_id)
+            # --- USAMOS LA NUEVA FUNCIÓN CON SELENIUM ---
+            source_code = get_source_code_with_selenium(contest_id, submission_id)
 
             if source_code:
                 with open(filename, 'w', encoding='utf-8') as f:
