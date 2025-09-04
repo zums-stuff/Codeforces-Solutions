@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: CFCommit
-        uses: GitDaksh/CFCommit@v1.2
+        uses: GitDaksh/CFCommit@v2
         with:
           cf_user_name: ${{ secrets.CF_USER_NAME }}
           gh_token: ${{ secrets.GH_TOKEN }}
