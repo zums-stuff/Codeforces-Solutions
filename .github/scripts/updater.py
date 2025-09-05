@@ -10,9 +10,14 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException
+
+# --- NUEVA LIBRERÍA ---
+from selenium_stealth import stealth
 
 def get_cf_submissions(handle):
-    url = f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=50" # Reducido a 50 por si acaso
+    # (Esta función no cambia)
+    url = f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=50"
     try:
         response = requests.get(url)
         response.raise_for_status()
@@ -26,45 +31,54 @@ def get_cf_submissions(handle):
 def get_source_code_with_selenium(contest_id, submission_id):
     url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
     
-    # --- Configuración de Selenium para un entorno de GitHub Actions ---
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless") # Ejecutar sin abrir una ventana de navegador
+    options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-    
+    # Evitar que Selenium imprima tantos logs
+    options.add_experimental_option('excludeSwitches', ['enable-logging'])
+
     driver = None
     try:
-        # Usamos webdriver-manager para instalar y manejar el driver de Chrome automáticamente
         service = ChromeService(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         
+        # --- APLICAMOS EL MODO SIGILOSO (STEALTH) ---
+        stealth(driver,
+                languages=["en-US", "en"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True,
+                )
+
         driver.get(url)
         
-        # --- Esperar explícitamente a que el elemento con el código fuente esté presente ---
-        # Esto es crucial. Esperará hasta 20 segundos para que la página cargue completamente.
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 25) # Aumentamos un poco el tiempo de espera
         source_code_element = wait.until(
             EC.presence_of_element_located((By.ID, "program-source-text"))
         )
         
-        # Esperar un poco más por si acaso hay cargas tardías
-        time.sleep(2)
+        time.sleep(3) # Pequeña pausa final por si acaso
 
         return source_code_element.text.strip()
 
+    # --- Manejo de errores más específico ---
+    except TimeoutException:
+        print(f"Selenium timed out waiting for submission {submission_id}. Page might be blocked or changed.")
+        driver.save_screenshot(f'selenium_timeout_error_{submission_id}.png')
+        return None
     except Exception as e:
-        print(f"Selenium failed for submission {submission_id}: {e}")
-        if driver:
-             # Guardar una captura de pantalla puede ayudar a depurar
-            driver.save_screenshot('selenium_error.png')
+        print(f"An unexpected Selenium error occurred for submission {submission_id}: {e}")
+        driver.save_screenshot(f'selenium_unexpected_error_{submission_id}.png')
         return None
     finally:
         if driver:
             driver.quit()
 
 def main(handle):
-    # (El resto de la función main es idéntica a la versión anterior)
+    # (El resto de la función main es idéntica)
     submissions = get_cf_submissions(handle)
     if not submissions:
         print("No submissions found or API error.")
@@ -108,7 +122,6 @@ def main(handle):
             
             filename = f"{dir_path}/{problem_index}_{problem_name}.{extension}"
             
-            # --- USAMOS LA NUEVA FUNCIÓN CON SELENIUM ---
             source_code = get_source_code_with_selenium(contest_id, submission_id)
 
             if source_code:
