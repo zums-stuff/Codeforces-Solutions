@@ -27,86 +27,143 @@ jobs:
         with:
           python-version: '3.x'
           
-      - name: Install dependencies
-        run: pip install requests cloudscraper
+      # --- INICIO DE CAMBIOS PARA PLAYWRIGHT ---
+      - name: Install Playwright dependencies
+        run: pip install requests playwright
+      
+      - name: Install Playwright browsers
+        run: python -m playwright install --with-deps
+      # --- FIN DE CAMBIOS PARA PLAYWRIGHT ---
           
-      - name: Create fetch_submissions.py (DEBUG MODE)
+      - name: Create fetch_submissions.py
         env:
           CF_HANDLE: "zum" # Tu usuario de Codeforces
         run: |
           sed "s/HANDLE = .*/HANDLE = \"${CF_HANDLE}\"/" > fetch_submissions.py << 'EOF'
           import requests
-          import cloudscraper
+          from playwright.sync_api import sync_playwright # <-- Importamos Playwright
           import json
           import os
           from datetime import datetime
           import time
           import html
-          import sys
 
           HANDLE = "placeholder"
-          COUNT = 10
+          COUNT = 15 # Aumentamos un poco por si acaso
           SUBMISSION_API = f"https://codeforces.com/api/user.status?handle={HANDLE}&from=1&count={COUNT}"
           
-          scraper = cloudscraper.create_scraper() 
-
-          def fetch_with_retry(url, max_retries=3):
-              for attempt in range(max_retries):
-                  try:
-                      response = scraper.get(url)
-                      response.raise_for_status()
-                      data = response.json()
-                      if data["status"] == "OK": return data
-                  except Exception as e:
-                      print(f"API fetch attempt {attempt+1} failed: {e}")
-                      if attempt == max_retries - 1: raise
-                      time.sleep(2 ** attempt)
-          
-          # --- INICIO DE LA MODIFICACIÓN DE DIAGNÓSTICO ---
-          def get_and_print_page_content(contest_id, submission_id):
-              """
-              Esta es una función temporal para diagnóstico.
-              No extrae el código, solo imprime el HTML de la página en los logs.
-              """
+          # --- INICIO DE LA NUEVA LÓGICA CON PLAYWRIGHT ---
+          def get_solution_code(contest_id, submission_id):
+              """Obtiene el código usando un navegador real con Playwright."""
               try:
-                  url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
-                  response = scraper.get(url)
-                  response.raise_for_status()
-                  
-                  print("\n\n--- INICIO DEL CONTENIDO HTML DE LA PÁGINA ---\n\n")
-                  print(response.text)
-                  print("\n\n--- FIN DEL CONTENIDO HTML DE LA PÁGINA ---\n\n")
-                  
+                  with sync_playwright() as p:
+                      browser = p.chromium.launch()
+                      page = browser.new_page()
+                      url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
+                      print(f"Navigating to {url} with Playwright...")
+                      
+                      # Navegamos a la página. Playwright esperará a que cargue.
+                      page.goto(url, wait_until='networkidle', timeout=60000)
+                      
+                      # Esperamos explícitamente a que el selector del código sea visible
+                      # Esta es la forma más robusta de hacerlo
+                      code_selector = "pre#program-source-text"
+                      page.wait_for_selector(code_selector, timeout=30000)
+                      
+                      # Extraemos el contenido del elemento
+                      code_content = page.inner_text(code_selector)
+                      
+                      browser.close()
+                      
+                      if code_content:
+                          # Playwright ya devuelve el texto decodificado
+                          return code_content
+                      
+                      print(f"Code block found but was empty for {submission_id}")
+                      return None
+
               except Exception as e:
-                  print(f"Error getting page content for {submission_id}: {e}")
-          # --- FIN DE LA MODIFICACIÓN DE DIAGNÓSTICO ---
+                  print(f"An error occurred with Playwright for submission {submission_id}: {e}")
+                  return None
+          # --- FIN DE LA NUEVA LÓGICA CON PLAYWRIGHT ---
+
+          def load_submission_history():
+              if os.path.exists("submission_history.json"):
+                  with open("submission_history.json", "r") as f: return json.load(f)
+              return []
+          
+          def save_submission_history(history):
+              with open("submission_history.json", "w") as f: json.dump(history, f, indent=4)
+          
+          def get_file_extension(lang):
+              lang = lang.lower()
+              if "c++" in lang or "gcc" in lang: return "cpp"
+              if "python" in lang: return "py"
+              if "java" in lang: return "java"
+              return "txt"
           
           def main():
-              print(f"Fetching submissions for {HANDLE}...")
-              data = fetch_with_retry(SUBMISSION_API)
-              if not data:
+              os.makedirs("submissions", exist_ok=True)
+              submitted_problems = load_submission_history()
+              
+              print(f"Fetching submissions for {HANDLE} from API...")
+              response = requests.get(SUBMISSION_API)
+              data = response.json()
+              if data["status"] != "OK":
                   print("Failed to fetch submissions from API. Exiting.")
                   return
               
               submissions = data["result"]
+              new_count = 0
               
-              # Solo procesamos la primera solución aceptada que encuentre para el diagnóstico
               for submission in sorted(submissions, key=lambda s: s['creationTimeSeconds'], reverse=True):
-                  if submission.get("verdict") == "OK":
-                      contest_id = submission["contestId"]
-                      submission_id = submission["id"]
-                      problem_id = f"{contest_id}_{submission['problem']['index']}"
-                      print(f"Found submission {problem_id}. Printing its page content for debugging...")
-                      get_and_print_page_content(contest_id, submission_id)
-                      print("Debug run finished. Exiting.")
-                      sys.exit(0) # Salimos después de procesar una
+                  if submission.get("verdict") != "OK": continue
+                  contest_id, p_index, s_id = submission["contestId"], submission["problem"]["index"], submission["id"]
+                  problem_id = f"{contest_id}_{p_index}"
+                  
+                  if problem_id in submitted_problems: continue
+                  
+                  print(f"Found new accepted solution: {problem_id}")
+                  code = get_solution_code(contest_id, s_id)
+
+                  if not code:
+                      print(f"Could not get code for {problem_id}, skipping.")
+                      continue
+                  
+                  extension = get_file_extension(submission["programmingLanguage"])
+                  file_path = f"submissions/{problem_id}.{extension}"
+                  with open(file_path, "w", encoding="utf-8") as file:
+                      file.write(code)
+                  
+                  submitted_problems.append(problem_id)
+                  new_count += 1
+                  print(f"Successfully added solution for {problem_id}")
               
-              print("No new accepted submissions found to debug.")
+              save_submission_history(submitted_problems)
+              print(f"Processed {new_count} new accepted solutions.")
           
           if __name__ == "__main__":
               main()
           EOF
 
-      - name: Run submission fetcher (DEBUG MODE)
+      - name: Run submission fetcher
         run: python fetch_submissions.py
+          
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "changes=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Commit and push changes
+        if: steps.check_changes.outputs.changes == 'true'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add -A
+          git commit -m "🚀 Added new Codeforces solutions"
+          git push
 
