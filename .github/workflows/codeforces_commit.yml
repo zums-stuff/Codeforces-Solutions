@@ -56,16 +56,9 @@ jobs:
                   url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
                   print(f"Navigating to {url}...")
                   
-                  # --- INICIO DEL CAMBIO CRÍTICO ---
-                  # Cambiamos 'networkidle' por 'domcontentloaded'.
-                  # Esto espera a que el HTML principal esté listo, sin preocuparse por el "ruido" de red de fondo.
-                  # Es una estrategia mucho más robusta y rápida.
-                  page.goto(url, wait_until='domcontentloaded', timeout=90000) # Aumentamos un poco el timeout general por si acaso
-                  # --- FIN DEL CAMBIO CRÍTICO ---
+                  page.goto(url, wait_until='domcontentloaded', timeout=90000)
                   
                   code_selector = "pre#program-source-text"
-                  # La siguiente línea se encarga ahora de esperar a que el desafío de Cloudflare se resuelva
-                  # y el elemento del código aparezca visible en la página.
                   page.wait_for_selector(code_selector, timeout=60000)
                   
                   code_content = page.inner_text(code_selector)
@@ -78,6 +71,16 @@ jobs:
 
               except Exception as e:
                   print(f"An error occurred with Playwright for submission {submission_id}: {e}")
+                  # --- INICIO DEL CAMBIO PARA DIAGNÓSTICO ---
+                  # Si el selector falla, imprimimos el HTML de la página para ver la estructura real.
+                  print("\n--- DEBUG: PRINTING PAGE HTML AS SEEN BY PLAYWRIGHT ---")
+                  try:
+                      html_content = page.content()
+                      print(html_content)
+                  except Exception as inner_e:
+                      print(f"Could not get page content for debugging: {inner_e}")
+                  print("--- DEBUG: END OF PAGE HTML ---\n")
+                  # --- FIN DEL CAMBIO PARA DIAGNÓSTICO ---
                   return None
 
           def load_submission_history():
@@ -125,30 +128,16 @@ jobs:
                   browser = p.chromium.launch()
                   page = browser.new_page()
                   
-                  for submission in new_submissions_to_fetch:
-                      contest_id, p_index, s_id = submission["contestId"], submission["problem"]["index"], submission["id"]
-                      problem_id = f"{contest_id}_{p_index}"
-                      
-                      print(f"Processing solution: {problem_id}")
-                      code = get_solution_code(page, contest_id, s_id)
-
-                      if not code:
-                          print(f"Could not get code for {problem_id}, skipping.")
-                          continue
-                      
-                      extension = get_file_extension(submission["programmingLanguage"])
-                      file_path = f"submissions/{problem_id}.{extension}"
-                      with open(file_path, "w", encoding="utf-8") as file:
-                          file.write(code)
-                      
-                      submitted_problems.append(problem_id)
-                      new_count += 1
-                      print(f"Successfully added solution for {problem_id}")
+                  # Para el diagnóstico, solo procesamos la primera solución para ser más rápidos.
+                  first_submission = new_submissions_to_fetch[0]
+                  contest_id, p_index, s_id = first_submission["contestId"], first_submission["problem"]["index"], first_submission["id"]
+                  problem_id = f"{contest_id}_{p_index}"
+                  
+                  print(f"Processing solution (DEBUG MODE): {problem_id}")
+                  get_solution_code(page, contest_id, s_id)
+                  print("Debug run finished. Exiting to allow log inspection.")
                   
                   browser.close()
-              
-              save_submission_history(submitted_problems)
-              print(f"Processed {new_count} new accepted solutions.")
           
           if __name__ == "__main__":
               main()
