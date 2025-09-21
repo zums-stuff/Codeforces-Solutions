@@ -27,7 +27,6 @@ jobs:
         with:
           python-version: '3.x'
           
-      # --- MODIFICACIÓN: Añadimos cloudscraper ---
       - name: Install dependencies
         run: pip install requests cloudscraper
           
@@ -37,7 +36,7 @@ jobs:
         run: |
           sed "s/HANDLE = .*/HANDLE = \"${CF_HANDLE}\"/" > fetch_submissions.py << 'EOF'
           import requests
-          import cloudscraper # <-- Importamos la nueva librería
+          import cloudscraper
           import json
           import os
           from datetime import datetime
@@ -48,13 +47,11 @@ jobs:
           COUNT = 10
           SUBMISSION_API = f"https://codeforces.com/api/user.status?handle={HANDLE}&from=1&count={COUNT}"
           
-          # Creamos una instancia del scraper que usaremos para todas las peticiones
           scraper = cloudscraper.create_scraper() 
 
           def fetch_with_retry(url, max_retries=3):
               for attempt in range(max_retries):
                   try:
-                      # Usamos el scraper en lugar de requests
                       response = scraper.get(url)
                       response.raise_for_status()
                       data = response.json()
@@ -62,49 +59,61 @@ jobs:
                           return data
                   except Exception as e:
                       print(f"API fetch attempt {attempt+1} failed: {e}")
-                      if attempt == max_retries - 1:
-                          raise
+                      if attempt == max_retries - 1: raise
                       time.sleep(2 ** attempt)
           
           def load_submission_history():
               history_file = "submission_history.json"
               if os.path.exists(history_file):
-                  with open(history_file, "r") as f:
-                      return json.load(f)
+                  with open(history_file, "r") as f: return json.load(f)
               return []
           
           def save_submission_history(history):
-              with open("submission_history.json", "w") as f:
-                  json.dump(history, f, indent=4)
+              with open("submission_history.json", "w") as f: json.dump(history, f, indent=4)
           
+          # --- INICIO DE LA MODIFICACIÓN FINAL ---
           def get_solution_code(contest_id, submission_id):
-              """Get code using cloudscraper to bypass Cloudflare"""
+              """Get code using cloudscraper and a more robust parsing method."""
               try:
                   url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
-                  # --- CAMBIO CLAVE: Usamos el scraper ---
-                  # Ya no necesitamos headers manuales, cloudscraper se encarga de todo
                   response = scraper.get(url)
                   response.raise_for_status()
                   
                   content = response.text
-                  start_marker = '<pre id="program-source-text"'
+                  
+                  # Marker for the unique ID of the code block
+                  id_marker = 'id="program-source-text"'
                   end_marker = '</pre>'
                   
-                  start_idx = content.find(start_marker)
-                  if start_idx == -1:
-                      print(f"Could not find code block for submission {submission_id}")
+                  # Find the unique ID first
+                  id_idx = content.find(id_marker)
+                  if id_idx == -1:
+                      print(f"Could not find ID 'program-source-text' for submission {submission_id}")
                       return None
-                      
-                  code_start = content.find('>', start_idx) + 1
-                  code_end = content.find(end_marker, code_start)
                   
+                  # Find the start of the <pre> tag before this ID
+                  pre_tag_start = content.rfind('<pre', 0, id_idx)
+                  if pre_tag_start == -1:
+                      print(f"Could not find start of <pre> tag for submission {submission_id}")
+                      return None
+                  
+                  # Find the end of the opening <pre...> tag
+                  code_start = content.find('>', pre_tag_start) + 1
+                  
+                  # Find the closing </pre> tag
+                  code_end = content.find(end_marker, code_start)
+
                   if code_end > code_start:
                       code = content[code_start:code_end]
                       return html.unescape(code)
+                  
+                  print(f"Could not extract code between tags for submission {submission_id}")
                   return None
+                  
               except Exception as e:
                   print(f"Error getting solution code for {submission_id}: {e}")
                   return None
+          # --- FIN DE LA MODIFICACIÓN FINAL ---
 
           def get_file_extension(lang):
               lang = lang.lower()
@@ -126,26 +135,22 @@ jobs:
               submissions = data["result"]
               new_count = 0
               
-              # Procesamos en orden cronológico inverso para coger las más recientes primero
               for submission in sorted(submissions, key=lambda s: s['creationTimeSeconds'], reverse=True):
                   if submission.get("verdict") != "OK": continue
-                      
-                  contest_id = submission["contestId"]
-                  problem_index = submission["problem"]["index"]
-                  submission_id = submission["id"]
+                  contest_id, problem_index, submission_id = submission["contestId"], submission["problem"]["index"], submission["id"]
                   problem_id = f"{contest_id}_{problem_index}"
                   
                   if problem_id in submitted_problems: continue
-                      
-                  print(f"Found new accepted solution: {problem_id}")
-                  lang = submission["programmingLanguage"]
-                  extension = get_file_extension(lang)
                   
+                  print(f"Found new accepted solution: {problem_id}")
                   code = get_solution_code(contest_id, submission_id)
+
                   if not code:
                       print(f"Could not get code for {problem_id}, skipping.")
                       continue
                   
+                  lang = submission["programmingLanguage"]
+                  extension = get_file_extension(lang)
                   file_path = f"submissions/{problem_id}.{extension}"
                   with open(file_path, "w", encoding="utf-8") as file:
                       file.write(code)
