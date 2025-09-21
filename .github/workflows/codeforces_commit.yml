@@ -2,7 +2,7 @@ name: Codeforces Auto-Commit
 on:
   schedule:
     - cron: "*/15 * * * *"  # Runs every 15 minutes
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:      # Allows manual trigger
 
 jobs:
   fetch-and-commit:
@@ -11,11 +11,19 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # Actualizado a v4 para mejor rendimiento
         with:
-          fetch-depth: 0  # Fetch all history
+          fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
-        
+      
+      # --- PASO MOVIDO AQUÍ ---
+      # Primero actualizamos el repositorio para evitar conflictos
+      - name: Pull latest changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git pull --rebase
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -23,18 +31,22 @@ jobs:
           
       - name: Install dependencies
         run: pip install requests
-        
+          
       - name: Create fetch_submissions.py
+        # Usamos una variable de entorno para el handle de Codeforces
+        env:
+          CF_HANDLE: "zum" # <-- CAMBIA TU USUARIO AQUÍ SI ES NECESARIO
         run: |
-          cat > fetch_submissions.py << 'EOF'
+          # Reemplazamos el handle hardcodeado con la variable de entorno
+          sed "s/HANDLE = .*/HANDLE = \"${CF_HANDLE}\"/" > fetch_submissions.py << 'EOF'
           import requests
           import json
           import os
           from datetime import datetime
           import time
           
-          # Your Codeforces handle - REPLACE THIS
-          HANDLE = "zum"
+          # Your Codeforces handle will be replaced by the environment variable
+          HANDLE = "placeholder"
           
           # Number of recent submissions to check
           COUNT = 10
@@ -73,13 +85,10 @@ jobs:
           def get_solution_code(contest_id, submission_id):
               """Get the code from a Codeforces submission"""
               try:
-                  # Directly accessing the submission page
                   url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
                   response = requests.get(url)
                   response.raise_for_status()
                   
-                  # This is a simple approach - might need improvements for reliability
-                  # We're looking for code within specific HTML elements
                   content = response.text
                   start_marker = '<pre id="program-source-text"'
                   end_marker = '</pre>'
@@ -89,13 +98,11 @@ jobs:
                       print(f"Could not find code for submission {submission_id}")
                       return None
                       
-                  # Find the actual code start after the pre tag
                   code_start = content.find('>', start_idx) + 1
                   code_end = content.find(end_marker, code_start)
                   
                   if code_end > code_start:
                       code = content[code_start:code_end]
-                      # HTML decode the code
                       import html
                       code = html.unescape(code)
                       return code
@@ -113,29 +120,13 @@ jobs:
                   return "py"
               elif "java" in lang:
                   return "java"
-              elif "javascript" in lang or "js" in lang:
-                  return "js"
-              elif "c#" in lang or "csharp" in lang:
-                  return "cs"
-              elif "go" in lang:
-                  return "go"
-              elif "rust" in lang:
-                  return "rs"
-              elif "kotlin" in lang:
-                  return "kt"
-              elif "ruby" in lang:
-                  return "rb"
               # Add more languages as needed
               return "txt"  # Default
           
           def main():
-              # Make sure submissions directory exists
               os.makedirs("submissions", exist_ok=True)
-              
-              # Load submission history
               submitted_problems = load_submission_history()
               
-              # Fetch recent submissions
               print(f"Fetching submissions for {HANDLE}...")
               try:
                   data = fetch_with_retry(SUBMISSION_API)
@@ -144,52 +135,41 @@ jobs:
                   print(f"Failed to fetch submissions: {e}")
                   return
               
-              # Process new accepted submissions
               new_count = 0
-              for submission in submissions:
-                  # Only process accepted solutions
-                  if submission["verdict"] != "OK":
+              for submission in reversed(submissions): # Process oldest first
+                  if submission.get("verdict") != "OK":
                       continue
                       
-                  contest_id = submission["contestId"] 
+                  contest_id = submission["contestId"]  
                   problem_index = submission["problem"]["index"]
                   submission_id = submission["id"]
                   problem_id = f"{contest_id}_{problem_index}"
                   
-                  # Skip if already processed
                   if problem_id in submitted_problems:
                       continue
                       
-                  # Get the programming language
                   lang = submission["programmingLanguage"]
                   extension = get_file_extension(lang)
                   
-                  # Get solution code
                   code = get_solution_code(contest_id, submission_id)
                   if not code:
                       print(f"Couldn't get code for {problem_id}, skipping")
                       continue
                   
-                  # Save the code to a file
                   file_path = f"submissions/{problem_id}.{extension}"
                   with open(file_path, "w", encoding="utf-8") as file:
                       file.write(code)
                   
-                  # Add problem metadata as a comment
                   problem_name = submission["problem"].get("name", "Unknown")
-                  contest_name = f"Contest {contest_id}"
                   with open("submissions/log.txt", "a") as log:
                       timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                       log.write(f"{problem_id} - {problem_name} - Solved on {timestamp}\n")
                   
-                  # Add to history
                   submitted_problems.append(problem_id)
                   new_count += 1
                   print(f"Added solution for {problem_id} - {problem_name}")
               
-              # Save updated history
               save_submission_history(submitted_problems)
-              
               print(f"Processed {new_count} new accepted solutions")
               if new_count > 0:
                   print("New solutions have been saved to the submissions directory")
@@ -197,10 +177,10 @@ jobs:
           if __name__ == "__main__":
               main()
           EOF
-        
+
       - name: Run submission fetcher
         run: python fetch_submissions.py
-        
+          
       - name: Check for changes
         id: check_changes
         run: |
@@ -210,19 +190,15 @@ jobs:
           else
             echo "changes=false" >> $GITHUB_OUTPUT
           fi
-        
-      - name: Pull latest changes
+          
+      # --- ESTE BLOQUE SE MOVIÓ ARRIBA ---
+      # - name: Pull latest changes ...
+
+      - name: Commit and push changes
         if: steps.check_changes.outputs.changes == 'true'
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git pull --rebase
-        
-      - name: Commit and push changes
-        if: steps.check_changes.outputs.changes == 'true'
-        run: |
           git add -A
           git commit -m "🚀 Added new Codeforces solutions"
           git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
